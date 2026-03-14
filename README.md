@@ -45,6 +45,8 @@ If Docker is not installed, download it from:
 
 https://www.docker.com/get-started
 
+# Thats my first try as Junior dont hate me pls
+
 ## 📥 Installation & Quick Start WIN/LIN
 
 ```bash
