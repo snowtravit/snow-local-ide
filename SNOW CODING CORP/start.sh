@@ -348,7 +348,7 @@ if ! command -v docker &> /dev/null; then
         if [ -f "$SCRIPT_DIR/get-docker.sh" ]; then
             sudo sh "$SCRIPT_DIR/get-docker.sh" || {
                 echo "[WARN] Docker installation failed."
-                echo "[INFO] Continuing without Docker (simulation mode)."
+                echo "[INFO] Continuing without Docker. Docker-mode execution will remain unavailable."
             }
             rm -f "$SCRIPT_DIR/get-docker.sh"
             
@@ -366,7 +366,7 @@ if ! command -v docker &> /dev/null; then
             fi
         else
             echo "[WARN] Could not download Docker install script."
-            echo "[INFO] Continuing without Docker (simulation mode)."
+            echo "[INFO] Continuing without Docker. Docker-mode execution will remain unavailable."
         fi
         
     elif [ "$CURRENT_OS" = "Darwin" ]; then
@@ -376,7 +376,7 @@ if ! command -v docker &> /dev/null; then
             brew install --cask docker || {
                 echo "[WARN] Homebrew Docker install failed."
                 echo "[INFO] Please install Docker Desktop manually from https://docker.com/products/docker-desktop"
-                echo "[INFO] Continuing without Docker (simulation mode)."
+                echo "[INFO] Continuing without Docker. Docker-mode execution will remain unavailable."
             }
             
             if [ -d "/Applications/Docker.app" ]; then
@@ -395,7 +395,7 @@ if ! command -v docker &> /dev/null; then
         else
             echo "[INFO] Homebrew not found."
             echo "[INFO] Please install Docker Desktop manually from https://docker.com/products/docker-desktop"
-            echo "[INFO] Continuing without Docker (simulation mode)."
+            echo "[INFO] Continuing without Docker. Docker-mode execution will remain unavailable."
         fi
     fi
     echo ""
@@ -405,7 +405,7 @@ echo ""
 echo "  [4/5] Building Docker images..."
 echo "  ---------------------------------"
 if ! command -v docker &> /dev/null; then
-    echo "[INFO] Docker not available - running in simulation mode"
+    echo "[INFO] Docker not available - Docker-mode execution will remain unavailable"
 elif docker info &> /dev/null; then
     echo "[OK] Docker is running! Building language images..."
     bash "$SCRIPT_DIR/docker/build-images.sh"
@@ -440,7 +440,7 @@ else
     else
         echo "[INFO] Docker did not start within 60 seconds."
         echo "       Please start Docker manually and re-run start.sh."
-        echo "       Starting in simulation mode for now..."
+        echo "       Starting the editor; Docker-mode execution will remain unavailable."
     fi
 fi
 
@@ -472,9 +472,6 @@ elif command -v open &> /dev/null; then
     open "http://localhost:3000" 2>/dev/null &
 fi
 
-# Get local IP
-LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "unknown")
-
 echo ""
 echo "  ============================================"
 echo "     SNOW IDE is running!"
@@ -484,9 +481,6 @@ echo "     http://localhost:3000"
 echo ""
 echo "     Backend API:"
 echo "     http://localhost:4000/api"
-echo ""
-echo "     Access from other devices:"
-echo "     http://$LOCAL_IP:3000"
 echo ""
 echo "     Press Ctrl+C to stop all services..."
 echo "  ============================================"

@@ -1,7 +1,8 @@
 import React from 'react';
+import type { ExecutionStatus } from '../../types';
 
 interface HeaderProps {
-  dockerStatus: { dockerAvailable: boolean; mode: string } | null;
+  dockerStatus: ExecutionStatus | null;
 }
 
 export const Header: React.FC<HeaderProps> = ({ dockerStatus }) => {
@@ -36,8 +37,10 @@ export const Header: React.FC<HeaderProps> = ({ dockerStatus }) => {
               {dockerStatus.mode === 'docker'
                 ? 'Docker Connected'
                 : dockerStatus.mode === 'local'
-                ? 'Local Execution'
-                : 'No Runtime'}
+                ? 'Local Execution (host permissions)'
+                : dockerStatus.configuredMode === 'docker'
+                ? 'Docker Unavailable'
+                : 'Local Runtime Unavailable'}
             </span>
           </div>
         )}

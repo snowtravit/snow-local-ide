@@ -114,7 +114,7 @@ export const LANGUAGES: Record<string, LanguageConfig> = {
 };
 
 export function getLanguageById(id: string): LanguageConfig | undefined {
-  return LANGUAGES[id];
+  return Object.prototype.hasOwnProperty.call(LANGUAGES, id) ? LANGUAGES[id] : undefined;
 }
 
 export function getAllLanguages(): LanguageConfig[] {

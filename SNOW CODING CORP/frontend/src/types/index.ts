@@ -33,6 +33,14 @@ export interface ExecutionResult {
   executionTime: number;
   status: 'success' | 'error' | 'timeout';
   executionId?: string;
+  mode?: 'docker' | 'local';
+}
+
+export interface ExecutionStatus {
+  dockerAvailable: boolean;
+  configuredMode: 'docker' | 'local';
+  mode: 'docker' | 'local' | 'unavailable';
+  localRuntimes: Record<string, boolean>;
 }
 
 export interface ExecutionHistory {

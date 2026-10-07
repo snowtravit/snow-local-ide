@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { ApiResponse, Project, ProjectFile, Language, ExecutionResult, ExecutionHistory } from '../types';
+import type { ApiResponse, Project, ProjectFile, Language, ExecutionResult, ExecutionHistory, ExecutionStatus } from '../types';
 
 const api = axios.create({
   baseURL: '/api',
@@ -85,8 +85,15 @@ export async function executeCode(params: {
   files: Array<{ name: string; content: string }>;
   stdin?: string;
 }): Promise<ExecutionResult> {
-  const { data } = await api.post<ApiResponse<ExecutionResult>>('/execute', params);
-  return data.data!;
+  try {
+    const { data } = await api.post<ApiResponse<ExecutionResult>>('/execute', params);
+    return data.data!;
+  } catch (error) {
+    if (axios.isAxiosError<ApiResponse<ExecutionResult>>(error) && error.response?.data.error) {
+      throw new Error(error.response.data.error);
+    }
+    throw error;
+  }
 }
 
 export async function stopExecution(executionId: string): Promise<void> {
@@ -100,7 +107,7 @@ export async function getExecutionHistory(projectId: string, limit?: number): Pr
   return data.data || [];
 }
 
-export async function getDockerStatus(): Promise<{ dockerAvailable: boolean; mode: string }> {
-  const { data } = await api.get<ApiResponse<{ dockerAvailable: boolean; mode: string }>>('/execute/status');
+export async function getDockerStatus(): Promise<ExecutionStatus> {
+  const { data } = await api.get<ApiResponse<ExecutionStatus>>('/execute/status');
   return data.data!;
 }

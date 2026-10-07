@@ -1,0 +1,28 @@
+name: Build and test
+
+on: [push, pull_request]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            SNOW CODING CORP/backend/package-lock.json
+            SNOW CODING CORP/frontend/package-lock.json
+      - name: Install backend dependencies
+        run: npm ci
+        working-directory: SNOW CODING CORP/backend
+      - name: Test and build backend
+        run: npm test
+        working-directory: SNOW CODING CORP/backend
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: SNOW CODING CORP/frontend
+      - name: Build frontend
+        run: npm run build
+        working-directory: SNOW CODING CORP/frontend

@@ -311,7 +311,7 @@ echo  NOTE: You may need to restart your PC for Docker to work.
 goto :docker_check
 
 :docker_skip
-echo  [INFO] Skipping Docker. Running in simulation mode.
+echo  [INFO] Skipping Docker. Docker-mode execution will remain unavailable.
 echo         Install Docker Desktop from https://docker.com for full execution.
 del /Q "%SCRIPT_DIR%DockerDesktopInstaller.exe" 2>nul
 goto :docker_done
@@ -383,7 +383,7 @@ call "%SCRIPT_DIR%docker\build-images.bat"
 goto :docker_done
 
 :docker_not_available
-echo  [INFO] Docker not available. Starting in simulation mode.
+echo  [INFO] Docker not available. Docker-mode execution will remain unavailable.
 echo         Start Docker Desktop and re-run start.bat for full execution.
 
 :docker_done

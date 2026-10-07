@@ -267,7 +267,7 @@ function createTarHeader(name: string, size: number): Buffer {
   const header = Buffer.alloc(512, 0);
 
   // File name (0-99)
-  header.write(name, 0, Math.min(name.length, 100), 'utf-8');
+  header.write(name, 0, Math.min(Buffer.byteLength(name, 'utf-8'), 100), 'utf-8');
 
   // File mode (100-107)
   header.write('0000777\0', 100, 8, 'utf-8');

@@ -4,6 +4,7 @@ import { DockerService } from '../services/DockerService';
 import { LocalExecutionService } from '../services/LocalExecutionService';
 import { store } from '../services/InMemoryStore';
 import { getLanguageById } from '../config/languages';
+import { getExecutionMode } from '../config/runtime';
 
 const router = Router();
 
@@ -12,10 +13,27 @@ router.post('/', async (req: Request, res: Response) => {
   try {
     const { projectId, language, files, stdin } = req.body;
 
-    if (!language || !files || !Array.isArray(files) || files.length === 0) {
+    if (typeof language !== 'string' || !language || !Array.isArray(files) || files.length === 0) {
       res.status(400).json({
         success: false,
         error: 'language and files array are required',
+      });
+      return;
+    }
+
+    // Names are used as tar entries and local paths. Keep every file inside
+    // the execution workspace and within the tar header's 100-byte name field.
+    if (files.some((file: unknown) => {
+      if (!file || typeof file !== 'object') return true;
+      const { name, content } = file as { name?: unknown; content?: unknown };
+      return typeof name !== 'string' || typeof content !== 'string' ||
+        !/^[\p{L}\p{N}_ .\/-]+$/u.test(name) ||
+        name.startsWith('/') || name.split('/').some((part) => !part || part === '.' || part === '..') ||
+        Buffer.byteLength(name, 'utf8') > 100;
+    }) || (stdin !== undefined && typeof stdin !== 'string')) {
+      res.status(400).json({
+        success: false,
+        error: 'files must contain string content and safe relative names (up to 100 UTF-8 bytes); stdin must be a string',
       });
       return;
     }
@@ -30,36 +48,42 @@ router.post('/', async (req: Request, res: Response) => {
     }
 
     const executionId = uuidv4();
+    const mode = getExecutionMode();
     let result;
 
-    // Try Docker first
-    const dockerAvailable = await DockerService.isAvailable();
-    if (dockerAvailable) {
+    // The configured mode is the only execution backend used for this request.
+    if (mode === 'docker') {
+      if (!await DockerService.isAvailable()) {
+        res.status(503).json({
+          success: false,
+          mode,
+          error: 'Docker is unavailable. Start Docker and check DOCKER_SOCKET, then retry. Code was not executed. Local execution requires explicitly starting the backend with EXECUTION_MODE=local and runs with your host user permissions.',
+        });
+        return;
+      }
       try {
         result = await DockerService.executeCode(langConfig, files, executionId, stdin);
-        // If Docker returned an image-not-found error, fall through to local execution
         if (result.status === 'error' && result.output.includes('No such image')) {
-          result = undefined;
+          result.output += `\n\nBuild the ${langConfig.image} image using docker/build-images.sh (or build-images.bat on Windows), then retry. No local execution was attempted.`;
         }
-      } catch {
-        // Docker execution failed, fall through to local execution
-        result = undefined;
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : 'Unknown Docker error';
+        res.status(503).json({
+          success: false,
+          mode,
+          error: `Docker execution failed: ${message}. Check Docker and the language image, then retry. No local execution was attempted.`,
+        });
+        return;
       }
-    }
-
-    // Try local execution if Docker didn't work
-    if (!result) {
-      const localResult = await LocalExecutionService.executeCode(langConfig, files, stdin);
-      if (localResult) {
-        result = localResult;
-      } else {
-        // No runtime available at all
-        result = {
-          output: `[Error] No runtime available for ${langConfig.name}.\n\nTo run ${langConfig.name} code, either:\n  1. Install ${langConfig.name} on your system\n  2. Or install Docker for full multi-language support\n\nYour code was NOT executed.`,
-          exitCode: 1,
-          executionTime: 0,
-          status: 'error' as const,
-        };
+    } else {
+      result = await LocalExecutionService.executeCode(langConfig, files, stdin);
+      if (!result) {
+        res.status(503).json({
+          success: false,
+          mode,
+          error: `No local runtime available for ${langConfig.name}. Install it on your system, or restart the backend with EXECUTION_MODE=docker and build the language image. Code was not executed.`,
+        });
+        return;
       }
     }
 
@@ -76,7 +100,7 @@ router.post('/', async (req: Request, res: Response) => {
       });
     }
 
-    res.json({ success: true, data: { ...result, executionId } });
+    res.json({ success: true, data: { ...result, executionId, mode } });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error';
     res.status(500).json({ success: false, error: message });
@@ -112,22 +136,25 @@ router.get('/history/:projectId', (req: Request, res: Response) => {
   }
 });
 
-// GET /api/execute/status - Check Docker status and local runtimes
+// GET /api/execute/status - Report availability of the configured execution mode
 router.get('/status', async (_req: Request, res: Response) => {
   try {
+    const configuredMode = getExecutionMode();
     const dockerAvailable = await DockerService.isAvailable();
-    const localRuntimes = await LocalExecutionService.getAvailableRuntimes();
+    const localRuntimes = configuredMode === 'local'
+      ? await LocalExecutionService.getAvailableRuntimes()
+      : {};
     const hasLocalRuntimes = Object.values(localRuntimes).some(Boolean);
 
-    let mode = 'unavailable';
-    if (dockerAvailable) mode = 'docker';
-    else if (hasLocalRuntimes) mode = 'local';
+    const available = configuredMode === 'docker' ? dockerAvailable : hasLocalRuntimes;
+    const mode = available ? configuredMode : 'unavailable';
 
     res.json({
       success: true,
       data: {
         dockerAvailable,
         localRuntimes,
+        configuredMode,
         mode,
       },
     });

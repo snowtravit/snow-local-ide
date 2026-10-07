@@ -7,7 +7,7 @@ import { CodeEditor } from './components/Editor/CodeEditor';
 import { Console } from './components/Console/Console';
 import { ProjectManager } from './components/ProjectManager/ProjectManager';
 import * as api from './services/api';
-import type { Language, Project, ProjectFile, ExecutionResult } from './types';
+import type { Language, Project, ProjectFile, ExecutionResult, ExecutionStatus } from './types';
 
 export const App: React.FC = () => {
   // State
@@ -21,7 +21,7 @@ export const App: React.FC = () => {
   const [stdinInput, setStdinInput] = useState('');
   const [isRunning, setIsRunning] = useState(false);
   const [executionId, setExecutionId] = useState<string | null>(null);
-  const [dockerStatus, setDockerStatus] = useState<{ dockerAvailable: boolean; mode: string } | null>(null);
+  const [dockerStatus, setDockerStatus] = useState<ExecutionStatus | null>(null);
   const [activeLanguage, setActiveLanguage] = useState<string>('');
 
   // Load initial data

@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.env
+SNOW CODING CORP/backend/projects/
+SNOW CODING CORP/node/
+SNOW CODING CORP/runtimes/
