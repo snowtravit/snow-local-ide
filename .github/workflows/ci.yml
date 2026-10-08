@@ -20,9 +20,15 @@ jobs:
       - name: Test and build backend
         run: npm test
         working-directory: SNOW CODING CORP/backend
+      - name: Lint backend
+        run: npm run lint
+        working-directory: SNOW CODING CORP/backend
       - name: Install frontend dependencies
         run: npm ci
         working-directory: SNOW CODING CORP/frontend
       - name: Build frontend
         run: npm run build
+        working-directory: SNOW CODING CORP/frontend
+      - name: Lint frontend
+        run: npm run lint
         working-directory: SNOW CODING CORP/frontend

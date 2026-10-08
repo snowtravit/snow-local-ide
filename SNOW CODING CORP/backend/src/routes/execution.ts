@@ -27,7 +27,7 @@ router.post('/', async (req: Request, res: Response) => {
       if (!file || typeof file !== 'object') return true;
       const { name, content } = file as { name?: unknown; content?: unknown };
       return typeof name !== 'string' || typeof content !== 'string' ||
-        !/^[\p{L}\p{N}_ .\/-]+$/u.test(name) ||
+        !/^[\p{L}\p{N}_ ./-]+$/u.test(name) ||
         name.startsWith('/') || name.split('/').some((part) => !part || part === '.' || part === '..') ||
         Buffer.byteLength(name, 'utf8') > 100;
     }) || (stdin !== undefined && typeof stdin !== 'string')) {
