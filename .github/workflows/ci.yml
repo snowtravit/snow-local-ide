@@ -23,6 +23,9 @@ jobs:
       - name: Lint backend
         run: npm run lint
         working-directory: SNOW CODING CORP/backend
+      - name: Audit backend production dependencies
+        run: npm audit --omit=dev --audit-level=high
+        working-directory: SNOW CODING CORP/backend
       - name: Install frontend dependencies
         run: npm ci
         working-directory: SNOW CODING CORP/frontend
@@ -31,4 +34,7 @@ jobs:
         working-directory: SNOW CODING CORP/frontend
       - name: Lint frontend
         run: npm run lint
+        working-directory: SNOW CODING CORP/frontend
+      - name: Audit frontend production dependencies
+        run: npm audit --omit=dev --audit-level=high
         working-directory: SNOW CODING CORP/frontend
