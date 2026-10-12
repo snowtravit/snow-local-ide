@@ -6,7 +6,7 @@ Code runs in Docker by default. Local execution must be enabled explicitly. If D
 
 ## Requirements
 
-- Node.js 20 or a newer supported release, with npm.
+- Node.js 20.19+ or 22.12+ from a supported release, with npm.
 - A running Docker daemon accessible to the backend for the default execution mode.
 - Internet access for installing dependencies and building images.
 
@@ -56,22 +56,24 @@ npm run dev
 
 These terminal paths assume you start in the directory where you cloned the repository. Open <http://127.0.0.1:3000>. The frontend proxies `/api` requests to `http://127.0.0.1:4000`.
 
-Create a project, select a language, edit a file, and run it to see its output. The editor currently sends the active file to the execution API; it does not build an entire project. In Docker mode, use the entry-point filename below.
+Create a project, select a language, edit a file, and run it to see its output. The active file is the entry point; the other project files are included so relative imports can resolve. Renamed files and nested paths are supported. This runs a small program rather than a general project build system.
+
+The editor and its language workers are bundled locally and do not require a CDN. Saving, creating a file, and changing files or projects preserve current edits. Failed saves keep the edited text and show an error for retry. Stop cancels the active execution, including a request that is still being prepared.
 
 ## Language images
 
 Versions come from the checked-in Dockerfiles. Local mode uses the runtimes installed on your machine.
 
-| Language | Docker runtime | Image tag | Entry point |
+| Language | Docker runtime | Image tag | Default filename |
 | --- | --- | --- | --- |
 | Python | Python 3.12; NumPy, pandas, requests included | `snow-ide-python` | `main.py` |
-| JavaScript | Node.js 20 | `snow-ide-javascript` | `main.js` |
+| JavaScript | Node.js 22 | `snow-ide-javascript` | `main.js` |
 | Java | Eclipse Temurin JDK 21 | `snow-ide-java` | `Main.java`, class `Main` |
 | C++ | GCC 13; C++17 compilation | `snow-ide-cpp` | `main.cpp` |
-| C# | .NET SDK 8 and `dotnet-script` | `snow-ide-csharp` | `main.cs` |
-| Go | Go 1.22 | `snow-ide-go` | `main.go` |
+| C# | .NET SDK 8; offline SDK project | `snow-ide-csharp` | `main.cs` |
+| Go | Go 1.25 | `snow-ide-go` | `main.go` |
 | PHP | PHP CLI 8.3 | `snow-ide-php` | `main.php` |
-| HTML | Alpine 3.19 with `cat` | `snow-ide-html` | `index.html` |
+| HTML | Alpine 3.23 with `cat` | `snow-ide-html` | `index.html` |
 
 HTML execution prints file contents to the console; it is not a rendered browser preview. Docker execution has no network access, so additional dependencies must be included in the image rather than downloaded by a running program.
 
@@ -79,7 +81,7 @@ HTML execution prints file contents to the console; it is not a rendered browser
 
 `EXECUTION_MODE=docker` is the default. Each run creates a container with networking disabled, a process limit of 100, and language-specific limits of 128–512 MiB memory and 0.25–0.5 CPU. Execution times out after 10 seconds for HTML and 30 seconds for other languages. The service attempts to stop and remove the container after each run, including errors and timeouts.
 
-These basic limits are not a guarantee of safe execution of hostile code. Container filesystems are writable, and the C# image uses its default root user. Use the project for local development with code you trust.
+All language images run as `nobody` with a writable `/code` workspace. Captured output is limited to 100 KiB; exceeding the limit stops the program. These basic limits are not a guarantee of safe execution of hostile code. Use the project for local development with code you trust.
 
 To deliberately run your own trusted code on the host, start the backend in local mode:
 
@@ -120,14 +122,24 @@ From the backend directory:
 ```bash
 npm run build
 npm test
+npm run lint
+npm audit
 ```
 
-Backend tests cover execution-mode selection, unavailable execution backends, and request validation. They do not replace running the language images with Docker.
+Backend tests cover execution modes, cancellation races, input validation, local process cleanup, safe file paths, renaming, and failed disk writes. To test actual language execution, build all eight Docker images, then run this from the backend directory:
+
+```bash
+npm run test:docker
+```
+
+The Docker tests run each language, renamed and nested entry files, bundled Python libraries, stdin, timeouts, output limits, isolation, Stop, and container cleanup.
 
 From the frontend directory:
 
 ```bash
 npm run build
+npm run lint
+npm audit
 ```
 
 `npm start` in the backend runs compiled output after a build. The frontend build writes to `frontend/dist`; serving it requires routing `/api` to the backend.

@@ -1,8 +1,10 @@
 import { execFile, spawn } from 'child_process';
+import { StringDecoder } from 'string_decoder';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { LanguageConfig } from '../config/languages';
+import { FileService } from './FileService';
 
 /**
  * Process raw stdout to handle ANSI clear-screen sequences.
@@ -175,8 +177,12 @@ function getPortableRuntimePaths(language: string): PortableRuntimeInfo[] {
  * Falls back to 'Main' if no public class is found.
  */
 function extractJavaClassName(code: string): string {
-  const match = code.match(/public\s+class\s+(\w+)/);
+  const match = code.match(/public\s+class\s+([A-Za-z_$][\w$]*)/);
   return match ? match[1] : 'Main';
+}
+
+function quoteJavaArgument(value: string): string {
+  return process.platform === 'win32' ? `"${value}"` : `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 const LOCAL_RUNTIMES: Record<string, LocalRuntime> = {
@@ -225,11 +231,14 @@ const LOCAL_RUNTIMES: Record<string, LocalRuntime> = {
   java: {
     commands: ['javac'],
     fileName: 'Main.java',
-    getCompileCmd: (exe, tempDir, fileName) => `"${exe}" "${path.join(tempDir, fileName)}"`,
+    getCompileCmd: (exe, tempDir, fileName) =>
+      `"${exe}" -d ${quoteJavaArgument(tempDir)} ${quoteJavaArgument(path.join(tempDir, fileName))}`,
     getRunCmd: (_exe, tempDir, fileName) => {
       // Derive the class name from the actual .java file name
       const className = fileName.replace(/\.java$/i, '');
-      return `java -cp "${tempDir}" ${className}`;
+      const code = fs.readFileSync(path.join(tempDir, fileName), 'utf8');
+      const packageName = code.match(/^\s*package\s+([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*;/m)?.[1];
+      return `java -cp ${quoteJavaArgument(tempDir)} ${quoteJavaArgument(`${packageName ? `${packageName}.` : ''}${className}`)}`;
     },
   },
   csharp: {
@@ -300,6 +309,8 @@ async function findRuntime(language: string): Promise<RuntimeResult | null> {
   return null;
 }
 
+const localExecutions = new Map<string, { stopped: boolean; stop?: () => void }>();
+
 /**
  * Run a shell command with timeout, optional stdin, and optional extra PATH/env
  */
@@ -309,10 +320,14 @@ function runCommand(
     timeout: number;
     cwd: string;
     stdin?: string;
+    executionId?: string;
     extraPath?: string;
     extraEnv?: Record<string, string>;
   }
 ): Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean }> {
+  if (options.executionId && localExecutions.get(options.executionId)?.stopped) {
+    return Promise.resolve({ stdout: '', stderr: '[Execution stopped]', exitCode: 137, timedOut: false });
+  }
   return new Promise((resolve) => {
     const isWindows = process.platform === 'win32';
     const shell = isWindows
@@ -347,7 +362,7 @@ function runCommand(
 
     const proc = spawn(shell, [shellArg, shellCommand], {
       cwd: options.cwd,
-      timeout: options.timeout,
+      detached: !isWindows,
       env,
       // On Windows, prevent Node.js from escaping quotes with backslashes
       // when building the command line for CreateProcessW.  Without this,
@@ -358,51 +373,57 @@ function runCommand(
     let stdout = '';
     let stderr = '';
     let timedOut = false;
-
-    proc.stdout.on('data', (data: Buffer) => {
-      stdout += data.toString('utf-8');
-      // Limit output size to 100KB
-      if (stdout.length > 102400) {
-        proc.kill('SIGTERM');
+    let outputLimited = false;
+    let outputBytes = 0;
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
+    const execution = options.executionId ? localExecutions.get(options.executionId) : undefined;
+    const killTree = () => {
+      if (!proc.pid) return;
+      if (isWindows) {
+        execFile('taskkill', ['/pid', String(proc.pid), '/T', '/F'], () => {});
+      } else {
+        try { process.kill(-proc.pid, 'SIGKILL'); } catch { /* Process already exited. */ }
       }
-    });
+    };
+    if (execution) execution.stop = killTree;
+    const timer = setTimeout(() => { timedOut = true; killTree(); }, Math.max(1, options.timeout));
+    timer.unref();
+    if (execution?.stopped) killTree();
 
-    proc.stderr.on('data', (data: Buffer) => {
-      stderr += data.toString('utf-8');
-      if (stderr.length > 102400) {
-        proc.kill('SIGTERM');
+    const append = (data: Buffer, decoder: StringDecoder, isError: boolean) => {
+      const remaining = Math.max(0, 102400 - outputBytes);
+      const accepted = data.subarray(0, remaining);
+      const text = decoder.write(accepted);
+      if (isError) stderr += text;
+      else stdout += text;
+      outputBytes += accepted.length;
+      if (data.length > remaining && !outputLimited) {
+        outputLimited = true;
+        killTree();
       }
-    });
-
-    if (options.stdin) {
-      proc.stdin.write(options.stdin);
-      if (!options.stdin.endsWith('\n')) {
-        proc.stdin.write('\n');
-      }
-      proc.stdin.end();
-    } else {
-      proc.stdin.end();
-    }
+    };
+    proc.stdout.on('data', (data: Buffer) => append(data, stdoutDecoder, false));
+    proc.stderr.on('data', (data: Buffer) => append(data, stderrDecoder, true));
+    proc.stdin.on('error', () => {}); // A program may close stdin before consuming it.
+    proc.stdin.end(options.stdin
+      ? (options.stdin.endsWith('\n') ? options.stdin : `${options.stdin}\n`) : '');
 
     proc.on('error', (err) => {
-      resolve({
-        stdout,
-        stderr: stderr || err.message,
-        exitCode: 1,
-        timedOut: false,
-      });
+      clearTimeout(timer);
+      if (execution) execution.stop = undefined;
+      resolve({ stdout, stderr: stderr || err.message, exitCode: 1, timedOut: false });
     });
-
-    proc.on('close', (code, signal) => {
-      if (signal === 'SIGTERM' || signal === 'SIGKILL') {
-        timedOut = true;
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      if (execution) execution.stop = undefined;
+      if (!outputLimited) {
+        stdout += stdoutDecoder.end();
+        stderr += stderrDecoder.end();
       }
-      resolve({
-        stdout,
-        stderr,
-        exitCode: code ?? 1,
-        timedOut,
-      });
+      if (outputLimited) stderr += '\n[Output exceeded 100 KiB; execution stopped]';
+      else if (execution?.stopped) stderr += '\n[Execution stopped]';
+      resolve({ stdout, stderr, exitCode: execution?.stopped ? 137 : (code ?? 1), timedOut });
     });
   });
 }
@@ -415,7 +436,8 @@ export class LocalExecutionService {
   static async executeCode(
     language: LanguageConfig,
     files: Array<{ name: string; content: string }>,
-    stdin?: string
+    stdin?: string,
+    executionId?: string
   ): Promise<ExecutionResult | null> {
     // Special case: HTML just returns the code (it's markup, not executable)
     if (language.id === 'html') {
@@ -427,8 +449,15 @@ export class LocalExecutionService {
       };
     }
 
+    if (executionId) {
+      if (localExecutions.has(executionId)) {
+        return { output: 'Execution ID is already running', exitCode: 1, executionTime: 0, status: 'error' };
+      }
+      localExecutions.set(executionId, { stopped: false });
+    }
     const runtimeInfo = await findRuntime(language.id);
     if (!runtimeInfo) {
+      if (executionId) localExecutions.delete(executionId);
       return null; // No local runtime available
     }
 
@@ -441,6 +470,8 @@ export class LocalExecutionService {
     try {
       // Write all files to temp directory
       for (const file of files) {
+        FileService.validateRelativePath(file.name);
+        if (typeof file.content !== 'string') throw new Error('File content must be a string');
         const filePath = path.join(tempDir, file.name);
         const dir = path.dirname(filePath);
         if (!fs.existsSync(dir)) {
@@ -451,7 +482,7 @@ export class LocalExecutionService {
 
       // Determine the actual file name to compile/run.
       // For Java, the file name must match the public class name.
-      let actualFileName = runtime.fileName;
+      let actualFileName = files[0]?.name || runtime.fileName;
       const mainFile = files[0];
 
       if (language.id === 'java' && mainFile) {
@@ -461,9 +492,6 @@ export class LocalExecutionService {
         if (actualFileName !== mainFile.name) {
           fs.writeFileSync(path.join(tempDir, actualFileName), mainFile.content, 'utf-8');
         }
-      } else if (mainFile && mainFile.name !== runtime.fileName) {
-        // For other languages, copy as the default file name if needed
-        fs.writeFileSync(path.join(tempDir, runtime.fileName), mainFile.content, 'utf-8');
       }
 
       // For JavaScript: create a preload script that overrides console.clear()
@@ -496,6 +524,7 @@ export class LocalExecutionService {
           '    return _orig_system(cmd)',
           'os.system = _patched_system',
           '_target = sys.argv[1]',
+          'sys.path.insert(0, os.path.dirname(os.path.abspath(_target)))',
           'sys.argv = sys.argv[1:]',
           "_code = open(_target, 'r', encoding='utf-8').read()",
           "exec(compile(_code, _target, 'exec'), {'__name__': '__main__', '__file__': _target, '__builtins__': __builtins__})",
@@ -531,7 +560,8 @@ export class LocalExecutionService {
       if (runtime.getCompileCmd) {
         const compileCmd = runtime.getCompileCmd(exe, tempDir, actualFileName);
         const compileResult = await runCommand(compileCmd, {
-          timeout: language.timeout,
+          timeout: Math.max(1, language.timeout - (Date.now() - startTime)),
+          executionId,
           cwd: tempDir,
           extraPath,
           extraEnv,
@@ -540,9 +570,9 @@ export class LocalExecutionService {
         if (compileResult.exitCode !== 0) {
           return {
             output: (compileResult.stderr || compileResult.stdout || 'Compilation failed').trim(),
-            exitCode: compileResult.exitCode,
+            exitCode: compileResult.timedOut ? 124 : compileResult.exitCode,
             executionTime: Date.now() - startTime,
-            status: 'error',
+            status: compileResult.timedOut ? 'timeout' : 'error',
           };
         }
       }
@@ -550,7 +580,8 @@ export class LocalExecutionService {
       // Run step
       const runCmd = runtime.getRunCmd(exe, tempDir, actualFileName);
       const result = await runCommand(runCmd, {
-        timeout: language.timeout,
+        timeout: Math.max(1, language.timeout - (Date.now() - startTime)),
+        executionId,
         cwd: tempDir,
         stdin,
         extraPath,
@@ -590,6 +621,7 @@ export class LocalExecutionService {
         status: 'error',
       };
     } finally {
+      if (executionId) localExecutions.delete(executionId);
       // Clean up temp directory
       try {
         fs.rmSync(tempDir, { recursive: true, force: true });
@@ -597,6 +629,14 @@ export class LocalExecutionService {
         // Ignore cleanup errors
       }
     }
+  }
+
+  static async stopExecution(executionId: string): Promise<boolean> {
+    const execution = localExecutions.get(executionId);
+    if (!execution) return false;
+    execution.stopped = true;
+    execution.stop?.();
+    return true;
   }
 
   /**

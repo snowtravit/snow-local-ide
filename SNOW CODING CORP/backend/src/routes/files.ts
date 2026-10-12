@@ -1,6 +1,8 @@
 import { Router, Request, Response } from 'express';
 import { store } from '../services/InMemoryStore';
-import { FileService } from '../services/FileService';
+import path from 'path';
+import { getLanguageById } from '../config/languages';
+import { FileService, FileValidationError } from '../services/FileService';
 
 const router = Router();
 
@@ -11,7 +13,7 @@ router.get('/:projectId', (req: Request, res: Response) => {
     res.json({ success: true, data: files });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error';
-    res.status(500).json({ success: false, error: message });
+    res.status(error instanceof FileValidationError ? 400 : 500).json({ success: false, error: message });
   }
 });
 
@@ -19,30 +21,39 @@ router.get('/:projectId', (req: Request, res: Response) => {
 router.post('/:projectId', (req: Request, res: Response) => {
   try {
     const { name, path: filePath, content, language } = req.body;
-    if (!name || !filePath || !language) {
+    if (typeof name !== 'string' || !name || typeof filePath !== 'string' ||
+      typeof language !== 'string' || !getLanguageById(language) ||
+      (content !== undefined && typeof content !== 'string')) {
       res.status(400).json({ success: false, error: 'name, path, and language are required' });
       return;
     }
 
+    FileService.validateRelativePath(name);
+    FileService.validateRelativePath(filePath);
     const project = store.getProject(req.params.projectId);
     if (!project) {
       res.status(404).json({ success: false, error: 'Project not found' });
       return;
     }
 
+    if (store.getFilesByProject(project.id).some((file) => file.path === filePath) ||
+      FileService.exists(project.id, filePath)) {
+      res.status(409).json({ success: false, error: 'A file already exists at this path' });
+      return;
+    }
+    FileService.writeFile(project.id, filePath, content ?? '');
     const file = store.createFile({
       projectId: req.params.projectId,
       name,
       path: filePath,
-      content: content || '',
+      content: content ?? '',
       language,
     });
 
-    FileService.writeFile(req.params.projectId, filePath, content || '');
     res.status(201).json({ success: true, data: file });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error';
-    res.status(500).json({ success: false, error: message });
+    res.status(error instanceof FileValidationError ? 400 : 500).json({ success: false, error: message });
   }
 });
 
@@ -64,7 +75,7 @@ router.get('/:projectId/:fileId', (req: Request, res: Response) => {
     }
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error';
-    res.status(500).json({ success: false, error: message });
+    res.status(error instanceof FileValidationError ? 400 : 500).json({ success: false, error: message });
   }
 });
 
@@ -78,19 +89,43 @@ router.put('/:projectId/:fileId', (req: Request, res: Response) => {
       return;
     }
 
-    const updateData: Record<string, string> = {};
+    if ((content !== undefined && typeof content !== 'string') ||
+      (name !== undefined && typeof name !== 'string')) {
+      res.status(400).json({ success: false, error: 'name and content must be strings' });
+      return;
+    }
+    if (name !== undefined) FileService.validateRelativePath(name);
+    const newPath = name === undefined ? file.path :
+      (name.includes('/') ? name : path.posix.join(path.posix.dirname(file.path), name));
+    FileService.validateRelativePath(newPath);
+    if (newPath !== file.path && (store.getFilesByProject(file.projectId)
+      .some((entry) => entry.id !== file.id && entry.path === newPath) ||
+      FileService.exists(file.projectId, newPath))) {
+      res.status(409).json({ success: false, error: 'A file already exists at this path' });
+      return;
+    }
+    if (newPath !== file.path) {
+      FileService.rename(file.projectId, file.path, newPath);
+      try {
+        if (content !== undefined) FileService.writeFile(file.projectId, newPath, content);
+      } catch (error) {
+        FileService.rename(file.projectId, newPath, file.path);
+        throw error;
+      }
+    } else if (content !== undefined) {
+      FileService.writeFile(file.projectId, file.path, content);
+    }
+    const updateData: Record<string, string> = { path: newPath };
     if (content !== undefined) updateData.content = content;
     if (name !== undefined) updateData.name = name;
 
     const updated = store.updateFile(req.params.fileId, updateData);
-    if (updated && content !== undefined) {
-      FileService.writeFile(req.params.projectId, updated.path, content);
-    }
+
 
     res.json({ success: true, data: updated });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error';
-    res.status(500).json({ success: false, error: message });
+    res.status(error instanceof FileValidationError ? 400 : 500).json({ success: false, error: message });
   }
 });
 
@@ -103,12 +138,12 @@ router.delete('/:projectId/:fileId', (req: Request, res: Response) => {
       return;
     }
 
-    store.deleteFile(req.params.fileId);
     FileService.deleteFile(req.params.projectId, file.path);
+    store.deleteFile(req.params.fileId);
     res.json({ success: true, message: 'File deleted' });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error';
-    res.status(500).json({ success: false, error: message });
+    res.status(error instanceof FileValidationError ? 400 : 500).json({ success: false, error: message });
   }
 });
 

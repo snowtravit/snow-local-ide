@@ -4,10 +4,11 @@ import type { ProjectFile, Language } from '../../types';
 
 interface FileTreeProps {
   files: ProjectFile[];
+  isLoading?: boolean;
   activeFileId: string | null;
   languages: Language[];
   onSelectFile: (file: ProjectFile) => void;
-  onCreateFile: (name: string, language: string) => void;
+  onCreateFile: (name: string, language: string) => Promise<boolean>;
   onDeleteFile: (fileId: string) => void;
   onRenameFile: (fileId: string, newName: string) => void;
 }
@@ -25,6 +26,7 @@ const fileIcons: Record<string, string> = {
 
 export const FileTree: React.FC<FileTreeProps> = ({
   files,
+  isLoading = false,
   activeFileId,
   languages,
   onSelectFile,
@@ -37,13 +39,20 @@ export const FileTree: React.FC<FileTreeProps> = ({
   const [newFileLang, setNewFileLang] = useState('');
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  const [isCreating, setIsCreating] = useState(false);
 
-  const handleCreateFile = () => {
-    if (newFileName.trim() && newFileLang) {
-      onCreateFile(newFileName.trim(), newFileLang);
-      setNewFileName('');
-      setNewFileLang('');
-      setShowNewFile(false);
+  const handleCreateFile = async () => {
+    if (newFileName.trim() && newFileLang && !isCreating) {
+      setIsCreating(true);
+      try {
+        if (await onCreateFile(newFileName.trim(), newFileLang)) {
+          setNewFileName('');
+          setNewFileLang('');
+          setShowNewFile(false);
+        }
+      } finally {
+        setIsCreating(false);
+      }
     }
   };
 
@@ -64,6 +73,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
           Files
         </div>
         <button
+          disabled={isLoading}
           onClick={() => setShowNewFile(!showNewFile)}
           className="p-1 rounded hover:bg-white/10 text-ide-text-muted hover:text-white transition-colors"
           title="New File"
@@ -95,8 +105,8 @@ export const FileTree: React.FC<FileTreeProps> = ({
             ))}
           </select>
           <div className="flex gap-2">
-            <button onClick={handleCreateFile} className="btn-primary text-xs flex-1 justify-center">
-              <Check size={12} /> Create
+            <button onClick={handleCreateFile} disabled={isCreating || !newFileName.trim() || !newFileLang} className="btn-primary text-xs flex-1 justify-center">
+              <Check size={12} /> {isCreating ? 'Creating...' : 'Create'}
             </button>
             <button onClick={() => setShowNewFile(false)} className="btn-glass text-xs">
               <X size={12} />
@@ -107,7 +117,10 @@ export const FileTree: React.FC<FileTreeProps> = ({
 
       {/* File list */}
       <div className="flex-1 overflow-y-auto py-1">
-        {files.length === 0 && (
+        {isLoading && (
+          <div role="status" className="px-4 py-8 text-center text-xs text-ide-text-muted">Loading files...</div>
+        )}
+        {!isLoading && files.length === 0 && (
           <div className="px-4 py-8 text-center text-xs text-ide-text-muted">
             No files yet. Click + to create one.
           </div>

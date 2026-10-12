@@ -11,7 +11,7 @@ echo.
 
 set "SCRIPT_DIR=%~dp0"
 set "NODE_DIR=%SCRIPT_DIR%node"
-set "NODE_VERSION=v20.11.1"
+set "NODE_VERSION=v22.23.3"
 set "NODE_ARCH=win-x64"
 set "NODE_FOLDER=node-%NODE_VERSION%-%NODE_ARCH%"
 set "NODE_ZIP=%NODE_FOLDER%.zip"
@@ -72,6 +72,11 @@ exit /b 1
 :node_ready
 echo [OK] Node.js: & node --version
 echo [OK] npm: & call npm --version
+node -e "const [major, minor] = process.versions.node.split('.').map(Number); process.exit((major === 20 && minor >= 19) || (major === 22 && minor >= 12) || major > 22 ? 0 : 1)"
+if errorlevel 1 (
+    echo [ERROR] Update Node.js to 22.12 or newer ^(or 20.19^) before starting the IDE.
+    exit /b 1
+)
 
 REM ============================================
 REM  Portable Runtimes (first time only)

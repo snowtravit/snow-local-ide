@@ -6,7 +6,7 @@ import type { Project, Language } from '../../types';
 interface ProjectManagerProps {
   projects: Project[];
   languages: Language[];
-  onCreateProject: (name: string, description: string, languages: string[]) => void;
+  onCreateProject: (name: string, description: string, languages: string[]) => Promise<boolean>;
   onSelectProject: (project: Project) => void;
   onDeleteProject: (id: string) => void;
 }
@@ -22,14 +22,21 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [selectedLangs, setSelectedLangs] = useState<string[]>([]);
+  const [isCreating, setIsCreating] = useState(false);
 
-  const handleCreate = () => {
-    if (name.trim() && selectedLangs.length > 0) {
-      onCreateProject(name.trim(), description.trim(), selectedLangs);
-      setName('');
-      setDescription('');
-      setSelectedLangs([]);
-      setShowCreate(false);
+  const handleCreate = async () => {
+    if (name.trim() && selectedLangs.length > 0 && !isCreating) {
+      setIsCreating(true);
+      try {
+        if (await onCreateProject(name.trim(), description.trim(), selectedLangs)) {
+          setName('');
+          setDescription('');
+          setSelectedLangs([]);
+          setShowCreate(false);
+        }
+      } finally {
+        setIsCreating(false);
+      }
     }
   };
 
@@ -156,11 +163,11 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
             <div className="flex gap-3 pt-2">
               <button
                 onClick={handleCreate}
-                disabled={!name.trim() || selectedLangs.length === 0}
+                disabled={isCreating || !name.trim() || selectedLangs.length === 0}
                 className={`btn-primary flex-1 justify-center ${(!name.trim() || selectedLangs.length === 0) ? 'opacity-40 cursor-not-allowed' : ''}`}
               >
                 <FolderPlus size={16} />
-                Create Project
+                {isCreating ? 'Creating...' : 'Create Project'}
               </button>
               <button onClick={() => setShowCreate(false)} className="btn-glass">
                 Cancel

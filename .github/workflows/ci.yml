@@ -23,8 +23,8 @@ jobs:
       - name: Lint backend
         run: npm run lint
         working-directory: SNOW CODING CORP/backend
-      - name: Audit backend production dependencies
-        run: npm audit --omit=dev --audit-level=high
+      - name: Audit backend dependencies
+        run: npm audit
         working-directory: SNOW CODING CORP/backend
       - name: Install frontend dependencies
         run: npm ci
@@ -35,6 +35,25 @@ jobs:
       - name: Lint frontend
         run: npm run lint
         working-directory: SNOW CODING CORP/frontend
-      - name: Audit frontend production dependencies
-        run: npm audit --omit=dev --audit-level=high
+      - name: Audit frontend dependencies
+        run: npm audit
         working-directory: SNOW CODING CORP/frontend
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: SNOW CODING CORP/backend/package-lock.json
+      - name: Build language images
+        run: bash docker/build-images.sh
+        working-directory: SNOW CODING CORP
+      - name: Install backend dependencies
+        run: npm ci
+        working-directory: SNOW CODING CORP/backend
+      - name: Test Docker language execution and cleanup
+        run: npm run test:docker
+        working-directory: SNOW CODING CORP/backend

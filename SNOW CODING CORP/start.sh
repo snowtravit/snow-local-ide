@@ -12,7 +12,7 @@ echo ""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NODE_DIR="$SCRIPT_DIR/node"
-NODE_VERSION="v20.11.1"
+NODE_VERSION="v22.23.3"
 
 # ============================================
 #  Detect OS and architecture
@@ -108,6 +108,10 @@ fi
 
 echo "[OK] Node.js: $(node --version)"
 echo "[OK] npm: $(npm --version)"
+if ! node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit((major === 20 && minor >= 19) || (major === 22 && minor >= 12) || major > 22 ? 0 : 1)'; then
+    echo "[ERROR] Update Node.js to 22.12 or newer (or 20.19) before starting the IDE."
+    exit 1
+fi
 
 # ============================================
 #  Portable Runtimes (first time only)

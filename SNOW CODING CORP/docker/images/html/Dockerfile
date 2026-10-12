@@ -1,4 +1,4 @@
-FROM alpine:3.19
-RUN apk add --no-cache coreutils
+FROM alpine:3.23
 WORKDIR /code
+RUN chown nobody:nobody /code
 USER nobody

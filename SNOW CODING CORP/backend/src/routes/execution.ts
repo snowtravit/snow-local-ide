@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { v4 as uuidv4 } from 'uuid';
+import { v4 as uuidv4, validate as isUuid } from 'uuid';
 import { DockerService } from '../services/DockerService';
 import { LocalExecutionService } from '../services/LocalExecutionService';
 import { store } from '../services/InMemoryStore';
@@ -7,11 +7,20 @@ import { getLanguageById } from '../config/languages';
 import { getExecutionMode } from '../config/runtime';
 
 const router = Router();
+const pendingRequests = new Map<string, { cancelled: boolean }>();
 
 // POST /api/execute - Execute code
 router.post('/', async (req: Request, res: Response) => {
+  let registeredExecutionId: string | undefined;
+  let stopDisconnectedRequest: (() => void) | undefined;
   try {
-    const { projectId, language, files, stdin } = req.body;
+    const { projectId, language, files, stdin, executionId: requestedExecutionId } = req.body;
+
+    if (requestedExecutionId !== undefined &&
+      (typeof requestedExecutionId !== 'string' || !isUuid(requestedExecutionId))) {
+      res.status(400).json({ success: false, error: 'executionId must be a UUID' });
+      return;
+    }
 
     if (typeof language !== 'string' || !language || !Array.isArray(files) || files.length === 0) {
       res.status(400).json({
@@ -47,8 +56,22 @@ router.post('/', async (req: Request, res: Response) => {
       return;
     }
 
-    const executionId = uuidv4();
+    const executionId = requestedExecutionId || uuidv4();
     const mode = getExecutionMode();
+    if (pendingRequests.has(executionId)) {
+      res.status(409).json({ success: false, error: 'Execution ID is already running' });
+      return;
+    }
+    const pending = { cancelled: false };
+    pendingRequests.set(executionId, pending);
+    registeredExecutionId = executionId;
+    stopDisconnectedRequest = () => {
+      if (!res.writableEnded) {
+        pending.cancelled = true;
+        void (mode === 'docker' ? DockerService : LocalExecutionService).stopExecution(executionId);
+      }
+    };
+    res.once('close', stopDisconnectedRequest);
     let result;
 
     // The configured mode is the only execution backend used for this request.
@@ -62,7 +85,10 @@ router.post('/', async (req: Request, res: Response) => {
         return;
       }
       try {
-        result = await DockerService.executeCode(langConfig, files, executionId, stdin);
+        if (res.destroyed) return;
+        result = pending.cancelled
+          ? { output: 'Execution stopped', exitCode: 137, executionTime: 0, status: 'error' as const }
+          : await DockerService.executeCode(langConfig, files, executionId, stdin);
         if (result.status === 'error' && result.output.includes('No such image')) {
           result.output += `\n\nBuild the ${langConfig.image} image using docker/build-images.sh (or build-images.bat on Windows), then retry. No local execution was attempted.`;
         }
@@ -76,7 +102,10 @@ router.post('/', async (req: Request, res: Response) => {
         return;
       }
     } else {
-      result = await LocalExecutionService.executeCode(langConfig, files, stdin);
+      if (res.destroyed) return;
+      result = pending.cancelled
+        ? { output: 'Execution stopped', exitCode: 137, executionTime: 0, status: 'error' as const }
+        : await LocalExecutionService.executeCode(langConfig, files, stdin, executionId);
       if (!result) {
         res.status(503).json({
           success: false,
@@ -103,7 +132,10 @@ router.post('/', async (req: Request, res: Response) => {
     res.json({ success: true, data: { ...result, executionId, mode } });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error';
-    res.status(500).json({ success: false, error: message });
+    if (!res.destroyed) res.status(500).json({ success: false, error: message });
+  } finally {
+    if (stopDisconnectedRequest) res.off('close', stopDisconnectedRequest);
+    if (registeredExecutionId) pendingRequests.delete(registeredExecutionId);
   }
 });
 
@@ -111,12 +143,16 @@ router.post('/', async (req: Request, res: Response) => {
 router.post('/stop', async (req: Request, res: Response) => {
   try {
     const { executionId } = req.body;
-    if (!executionId) {
-      res.status(400).json({ success: false, error: 'executionId is required' });
+    if (typeof executionId !== 'string' || !isUuid(executionId)) {
+      res.status(400).json({ success: false, error: 'executionId must be a UUID' });
       return;
     }
 
-    const stopped = await DockerService.stopExecution(executionId);
+    const pending = pendingRequests.get(executionId);
+    if (pending) pending.cancelled = true;
+    const activeStopped = await DockerService.stopExecution(executionId) ||
+      await LocalExecutionService.stopExecution(executionId);
+    const stopped = !!pending || activeStopped;
     res.json({ success: true, stopped });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error';

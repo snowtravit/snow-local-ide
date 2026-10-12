@@ -68,7 +68,7 @@ export const LANGUAGES: Record<string, LanguageConfig> = {
     name: 'C#',
     extension: '.cs',
     image: 'snow-ide-csharp',
-    command: 'dotnet script /code/main.cs',
+    command: 'dotnet run --project /code/app.csproj --nologo -p:MSBuildEnableWorkloadResolver=false',
     monacoLanguage: 'csharp',
     defaultCode: `using System;\n\nclass Program {\n    static void Main() {\n        Console.WriteLine("Hello, World!");\n    }\n}`,
     timeout: 30000,

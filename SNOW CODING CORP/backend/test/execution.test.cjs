@@ -201,14 +201,16 @@ test('safe nested paths and UTF-8 content are accepted', async () => {
 
 test('Docker tar entries preserve a validated UTF-8 filename', async () => {
   const Dockerode = require('dockerode');
+  const { PassThrough, Readable } = require('node:stream');
   const { getLanguageById } = require('../dist/config/languages');
   const originalCreate = Dockerode.prototype.createContainer;
   let archive;
   Dockerode.prototype.createContainer = async () => ({
     putArchive: async (buffer) => { archive = buffer; },
+    attach: async () => new PassThrough(),
     start: async () => {},
     wait: async () => ({ StatusCode: 0 }),
-    logs: async () => Buffer.alloc(0),
+    logs: async () => Readable.from([]),
     stop: async () => {},
     remove: async () => {},
   });
@@ -218,8 +220,11 @@ test('Docker tar entries preserve a validated UTF-8 filename', async () => {
     const result = await original.dockerExecute.call(DockerService,
       { ...getLanguageById('python'), timeout: 10 }, [{ name: filename, content }]);
     assert.equal(result.status, 'success');
-    assert.equal(archive.subarray(0, 100).toString('utf8').replace(/\0.*$/s, ''), filename);
-    assert.equal(archive.subarray(512, 512 + Buffer.byteLength(content)).toString('utf8'), content);
+    assert.equal(archive.subarray(0, 100).toString('utf8').replace(/\0.*$/s, ''), 'src/');
+    assert.equal(archive.subarray(156, 157).toString(), '5');
+    assert.equal(archive.subarray(108, 115).toString(), '0177776');
+    assert.equal(archive.subarray(512, 612).toString('utf8').replace(/\0.*$/s, ''), filename);
+    assert.equal(archive.subarray(1024, 1024 + Buffer.byteLength(content)).toString('utf8'), content);
   } finally {
     Dockerode.prototype.createContainer = originalCreate;
   }
@@ -255,4 +260,157 @@ test('explicit local mode can execute a trusted JavaScript smoke program', async
   assert.equal(response.body.data.status, 'success');
   assert.equal(response.body.data.output, 'Local smoke');
   assert.equal(calls.dockerExecute, 0);
+});
+
+test('client execution IDs are passed to the execution service', async () => {
+  const id = require('node:crypto').randomUUID();
+  let receivedId;
+  DockerService.executeCode = async (_lang, _files, executionId) => {
+    receivedId = executionId;
+    return { ...success };
+  };
+  const response = await request({ ...payload, executionId: id });
+  assert.equal(response.body.data.executionId, id);
+  assert.equal(receivedId, id);
+  const invalid = await request({ ...payload, executionId: '../escape' });
+  assert.equal(invalid.status, 400);
+});
+
+test('Stop during a pending Docker availability check prevents code execution', async () => {
+  const id = require('node:crypto').randomUUID();
+  let pingEntered;
+  let releasePing;
+  const entered = new Promise((resolve) => { pingEntered = resolve; });
+  DockerService.isAvailable = () => {
+    pingEntered();
+    return new Promise((resolve) => { releasePing = () => resolve(true); });
+  };
+  const execution = request({ ...payload, executionId: id });
+  await entered;
+  try {
+    const stopped = await request({ executionId: id }, '/api/execute/stop');
+    assert.equal(stopped.body.stopped, true);
+  } finally {
+    releasePing();
+  }
+  const response = await execution;
+  assert.equal(response.body.data.exitCode, 137);
+  assert.equal(response.body.data.status, 'error');
+  assert.equal(calls.dockerExecute, 0);
+});
+
+test('a disconnected request during Docker availability never executes code', async () => {
+  const id = require('node:crypto').randomUUID();
+  let pingEntered;
+  let releasePing;
+  const entered = new Promise((resolve) => { pingEntered = resolve; });
+  DockerService.isAvailable = () => {
+    pingEntered();
+    return new Promise((resolve) => { releasePing = () => resolve(true); });
+  };
+  const controller = new AbortController();
+  const closed = new Promise((resolve) => {
+    server.once('request', (_req, res) => res.once('close', resolve));
+  });
+  const execution = fetch(`${baseURL}/api/execute`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...payload, executionId: id }), signal: controller.signal,
+  });
+  await entered;
+  controller.abort();
+  await assert.rejects(execution, { name: 'AbortError' });
+  // Observe the actual socket close before letting the pending ping complete.
+  await closed;
+  releasePing();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.dockerExecute, 0);
+});
+
+test('a duplicated in-flight execution ID is rejected without starting a second program', async () => {
+  const id = require('node:crypto').randomUUID();
+  let pingEntered;
+  let releasePing;
+  const entered = new Promise((resolve) => { pingEntered = resolve; });
+  DockerService.isAvailable = () => {
+    pingEntered();
+    return new Promise((resolve) => { releasePing = () => resolve(true); });
+  };
+  const execution = request({ ...payload, executionId: id });
+  await entered;
+  try {
+    const duplicate = await request({ ...payload, executionId: id });
+    assert.equal(duplicate.status, 409);
+  } finally {
+    releasePing();
+  }
+  await execution;
+  assert.equal(calls.dockerExecute, 1);
+});
+
+test('Stop while Docker start is pending cannot leave a newly started process running', async () => {
+  const Dockerode = require('dockerode');
+  const { PassThrough } = require('node:stream');
+  const { getLanguageById } = require('../dist/config/languages');
+  const originalCreate = Dockerode.prototype.createContainer;
+  let enteredStart, releaseStart;
+  const entered = new Promise((resolve) => { enteredStart = resolve; });
+  let running = false, stops = 0, removes = 0, logs = 0;
+  Dockerode.prototype.createContainer = async () => ({
+    putArchive: async () => {}, attach: async () => new PassThrough(),
+    start: async () => {
+      enteredStart();
+      await new Promise((resolve) => { releaseStart = resolve; });
+      running = true;
+    },
+    logs: async () => { logs++; throw new Error('Should never follow logs after pending stop'); },
+    stop: async () => { stops++; running = false; },
+    remove: async () => { removes++; },
+  });
+  const id = require('node:crypto').randomUUID();
+  try {
+    const pending = original.dockerExecute(getLanguageById('javascript'), [{ name: 'renamed.js', content: '' }], id);
+    await entered;
+    assert.equal(await DockerService.stopExecution(id), true);
+    releaseStart();
+    const result = await pending;
+    assert.equal(result.status, 'error');
+    assert.equal(result.exitCode, 137);
+    assert.equal(running, false);
+    assert.ok(stops >= 2);
+    assert.equal(removes, 1);
+    assert.equal(logs, 0);
+  } finally {
+    releaseStart?.();
+    Dockerode.prototype.createContainer = originalCreate;
+  }
+});
+
+test('an abruptly closed Docker output stream reports an error and removes its container', async () => {
+  const Dockerode = require('dockerode');
+  const { Duplex } = require('node:stream');
+  const { getLanguageById } = require('../dist/config/languages');
+  const originalCreate = Dockerode.prototype.createContainer;
+  const stream = new Duplex({ read() {}, write(_chunk, _encoding, done) { done(); } });
+  let removes = 0;
+  Dockerode.prototype.createContainer = async () => ({
+    putArchive: async () => {},
+    attach: async () => stream,
+    start: async () => { setImmediate(() => stream.destroy()); },
+    wait: async () => ({ StatusCode: 0 }),
+    stop: async () => {},
+    remove: async () => { removes++; },
+  });
+  try {
+    const result = await original.dockerExecute(
+      { ...getLanguageById('javascript'), timeout: 1000 },
+      [{ name: 'main.js', content: '' }],
+    );
+    assert.equal(result.status, 'error');
+    assert.equal(result.exitCode, 1);
+    assert.match(result.output, /output connection closed before EOF/);
+    assert.equal(removes, 1);
+  } finally {
+    Dockerode.prototype.createContainer = originalCreate;
+    stream.destroy();
+  }
 });

@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
-import { store } from '../services/InMemoryStore';
-import { FileService } from '../services/FileService';
+import { store, ProjectData } from '../services/InMemoryStore';
+import { FileService, FileValidationError } from '../services/FileService';
 import { getAllLanguages, getLanguageById } from '../config/languages';
 
 const router = Router();
@@ -12,46 +12,55 @@ router.get('/', (_req: Request, res: Response) => {
     res.json({ success: true, data: projects });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error';
-    res.status(500).json({ success: false, error: message });
+    res.status(error instanceof FileValidationError ? 400 : 500).json({ success: false, error: message });
   }
 });
 
 // POST /api/projects - Create a new project
 router.post('/', (req: Request, res: Response) => {
+  let newProjectId: string | undefined;
   try {
     const { name, description, languages } = req.body;
-    if (!name) {
+    if (typeof name !== 'string' || !name.trim() ||
+      (description !== undefined && typeof description !== 'string') ||
+      (languages !== undefined && (!Array.isArray(languages) ||
+        languages.some((id: unknown) => typeof id !== 'string' || !getLanguageById(id))))) {
       res.status(400).json({ success: false, error: 'Project name is required' });
       return;
     }
 
-    const project = store.createProject({ name, description, languages });
+    const project = store.createProject({ name: name.trim(), description, languages: languages ? [...new Set(languages)] as string[] : [] });
+    newProjectId = project.id;
     FileService.createProjectDir(project.id);
 
     // Create default files for selected languages
-    if (languages && Array.isArray(languages)) {
-      for (const langId of languages) {
+    if (project.languages.length) {
+      for (const langId of project.languages) {
         const lang = getLanguageById(langId);
         if (lang) {
           const fileName = langId === 'html' ? `index${lang.extension}` :
                           langId === 'java' ? `Main${lang.extension}` :
                           `main${lang.extension}`;
-          const file = store.createFile({
+          FileService.writeFile(project.id, fileName, lang.defaultCode);
+          store.createFile({
             projectId: project.id,
             name: fileName,
             path: fileName,
             content: lang.defaultCode,
             language: langId,
           });
-          FileService.writeFile(project.id, file.path, file.content);
         }
       }
     }
 
     res.status(201).json({ success: true, data: project });
   } catch (error: unknown) {
+    if (newProjectId) {
+      store.deleteProject(newProjectId);
+      try { FileService.deleteProject(newProjectId); } catch { /* Preserve the original disk error. */ }
+    }
     const message = error instanceof Error ? error.message : 'Unknown error';
-    res.status(500).json({ success: false, error: message });
+    res.status(error instanceof FileValidationError ? 400 : 500).json({ success: false, error: message });
   }
 });
 
@@ -68,7 +77,7 @@ router.get('/:id', (req: Request, res: Response) => {
     res.json({ success: true, data: { ...project, files } });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error';
-    res.status(500).json({ success: false, error: message });
+    res.status(error instanceof FileValidationError ? 400 : 500).json({ success: false, error: message });
   }
 });
 
@@ -76,7 +85,18 @@ router.get('/:id', (req: Request, res: Response) => {
 router.put('/:id', (req: Request, res: Response) => {
   try {
     const { name, description, languages } = req.body;
-    const project = store.updateProject(req.params.id, { name, description, languages });
+    if ((name !== undefined && (typeof name !== 'string' || !name.trim())) ||
+      (description !== undefined && typeof description !== 'string') ||
+      (languages !== undefined && (!Array.isArray(languages) ||
+        languages.some((id: unknown) => typeof id !== 'string' || !getLanguageById(id))))) {
+      res.status(400).json({ success: false, error: 'Invalid project name, description, or languages' });
+      return;
+    }
+    const update: Partial<ProjectData> = {};
+    if (name !== undefined) update.name = name.trim();
+    if (description !== undefined) update.description = description;
+    if (languages !== undefined) update.languages = [...new Set(languages)] as string[];
+    const project = store.updateProject(req.params.id, update);
     if (!project) {
       res.status(404).json({ success: false, error: 'Project not found' });
       return;
@@ -84,23 +104,23 @@ router.put('/:id', (req: Request, res: Response) => {
     res.json({ success: true, data: project });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error';
-    res.status(500).json({ success: false, error: message });
+    res.status(error instanceof FileValidationError ? 400 : 500).json({ success: false, error: message });
   }
 });
 
 // DELETE /api/projects/:id - Delete project
 router.delete('/:id', (req: Request, res: Response) => {
   try {
-    const deleted = store.deleteProject(req.params.id);
-    if (!deleted) {
+    if (!store.getProject(req.params.id)) {
       res.status(404).json({ success: false, error: 'Project not found' });
       return;
     }
     FileService.deleteProject(req.params.id);
+    store.deleteProject(req.params.id);
     res.json({ success: true, message: 'Project deleted' });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error';
-    res.status(500).json({ success: false, error: message });
+    res.status(error instanceof FileValidationError ? 400 : 500).json({ success: false, error: message });
   }
 });
 

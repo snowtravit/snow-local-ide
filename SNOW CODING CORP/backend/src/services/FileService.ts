@@ -1,124 +1,111 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { validate as isUuid } from 'uuid';
+import { randomUUID } from 'crypto';
 
-const PROJECTS_DIR = process.env.PROJECTS_DIR || path.join(__dirname, '../../projects');
+const PROJECTS_DIR = path.resolve(process.env.PROJECTS_DIR || path.join(__dirname, '../../projects'));
+
+export class FileValidationError extends Error {}
 
 export class FileService {
-  /**
-   * Ensure projects directory exists
-   */
   static init(): void {
-    if (!fs.existsSync(PROJECTS_DIR)) {
-      fs.mkdirSync(PROJECTS_DIR, { recursive: true });
+    fs.mkdirSync(PROJECTS_DIR, { recursive: true });
+  }
+
+  static validateRelativePath(filePath: unknown): asserts filePath is string {
+    if (typeof filePath !== 'string' || !/^[\p{L}\p{N}_ ./-]+$/u.test(filePath) ||
+      filePath.startsWith('/') || Buffer.byteLength(filePath, 'utf8') > 100 ||
+      filePath.split('/').some((part) => !part || part === '.' || part === '..')) {
+      throw new FileValidationError('Use a safe relative file path up to 100 UTF-8 bytes');
     }
   }
 
-  /**
-   * Get project directory path
-   */
   static getProjectPath(projectId: string): string {
-    return path.join(PROJECTS_DIR, projectId);
-  }
-
-  /**
-   * Create project directory
-   */
-  static createProjectDir(projectId: string): string {
-    const projectPath = this.getProjectPath(projectId);
-    if (!fs.existsSync(projectPath)) {
-      fs.mkdirSync(projectPath, { recursive: true });
+    if (typeof projectId !== 'string' || !isUuid(projectId)) {
+      throw new FileValidationError('Invalid project ID');
+    }
+    const projectPath = path.join(PROJECTS_DIR, projectId);
+    if (fs.existsSync(projectPath) && fs.lstatSync(projectPath).isSymbolicLink()) {
+      throw new FileValidationError('Symbolic links are not allowed in project paths');
     }
     return projectPath;
   }
 
-  /**
-   * Write a file to disk
-   */
+  private static resolveFile(projectId: string, filePath: string, allowRoot = false): string {
+    const projectPath = this.getProjectPath(projectId);
+    if (!allowRoot || filePath !== '') this.validateRelativePath(filePath);
+    const fullPath = path.join(projectPath, filePath);
+    let current = projectPath;
+    for (const part of filePath.split('/').filter(Boolean)) {
+      current = path.join(current, part);
+      if (fs.existsSync(current) && fs.lstatSync(current).isSymbolicLink()) {
+        throw new FileValidationError('Symbolic links are not allowed in project paths');
+      }
+    }
+    return fullPath;
+  }
+
+  static createProjectDir(projectId: string): string {
+    const projectPath = this.getProjectPath(projectId);
+    fs.mkdirSync(projectPath, { recursive: true });
+    return projectPath;
+  }
+
   static writeFile(projectId: string, filePath: string, content: string): void {
-    const fullPath = path.join(this.getProjectPath(projectId), filePath);
+    if (typeof content !== 'string') throw new FileValidationError('File content must be a string');
+    const fullPath = this.resolveFile(projectId, filePath);
     const dir = path.dirname(fullPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true });
+    const temporaryPath = path.join(dir, `.save-${randomUUID()}`);
+    try {
+      fs.writeFileSync(temporaryPath, content, { encoding: 'utf8', flag: 'wx' });
+      fs.renameSync(temporaryPath, fullPath);
+    } finally {
+      if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
     }
-    fs.writeFileSync(fullPath, content, 'utf-8');
   }
 
-  /**
-   * Read a file from disk
-   */
   static readFile(projectId: string, filePath: string): string {
-    const fullPath = path.join(this.getProjectPath(projectId), filePath);
-    if (!fs.existsSync(fullPath)) {
-      throw new Error(`File not found: ${filePath}`);
-    }
-    return fs.readFileSync(fullPath, 'utf-8');
+    return fs.readFileSync(this.resolveFile(projectId, filePath), 'utf8');
   }
 
-  /**
-   * Delete a file from disk
-   */
+  static exists(projectId: string, filePath: string): boolean {
+    return fs.existsSync(this.resolveFile(projectId, filePath));
+  }
+
   static deleteFile(projectId: string, filePath: string): void {
-    const fullPath = path.join(this.getProjectPath(projectId), filePath);
-    if (fs.existsSync(fullPath)) {
-      fs.unlinkSync(fullPath);
-    }
+    const fullPath = this.resolveFile(projectId, filePath);
+    if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
   }
 
-  /**
-   * List files in a project directory
-   */
-  static listFiles(projectId: string, subPath: string = ''): Array<{ name: string; path: string; type: 'file' | 'directory' }> {
-    const dirPath = path.join(this.getProjectPath(projectId), subPath);
-    if (!fs.existsSync(dirPath)) {
-      return [];
-    }
-
-    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-    return entries.map((entry) => ({
+  static listFiles(projectId: string, subPath = ''): Array<{ name: string; path: string; type: 'file' | 'directory' }> {
+    const dirPath = this.resolveFile(projectId, subPath, true);
+    if (!fs.existsSync(dirPath)) return [];
+    return fs.readdirSync(dirPath, { withFileTypes: true }).map((entry) => ({
       name: entry.name,
-      path: path.join(subPath, entry.name).replace(/\\/g, '/'),
-      type: entry.isDirectory() ? 'directory' as const : 'file' as const,
+      path: path.posix.join(subPath, entry.name),
+      type: entry.isDirectory() ? 'directory' : 'file',
     }));
   }
 
-  /**
-   * Create a directory in a project
-   */
   static createDir(projectId: string, dirPath: string): void {
-    const fullPath = path.join(this.getProjectPath(projectId), dirPath);
-    if (!fs.existsSync(fullPath)) {
-      fs.mkdirSync(fullPath, { recursive: true });
-    }
+    fs.mkdirSync(this.resolveFile(projectId, dirPath), { recursive: true });
   }
 
-  /**
-   * Delete a directory in a project
-   */
   static deleteDir(projectId: string, dirPath: string): void {
-    const fullPath = path.join(this.getProjectPath(projectId), dirPath);
-    if (fs.existsSync(fullPath)) {
-      fs.rmSync(fullPath, { recursive: true, force: true });
-    }
+    fs.rmSync(this.resolveFile(projectId, dirPath), { recursive: true, force: true });
   }
 
-  /**
-   * Rename a file or directory
-   */
   static rename(projectId: string, oldPath: string, newPath: string): void {
-    const fullOldPath = path.join(this.getProjectPath(projectId), oldPath);
-    const fullNewPath = path.join(this.getProjectPath(projectId), newPath);
-    if (fs.existsSync(fullOldPath)) {
-      fs.renameSync(fullOldPath, fullNewPath);
-    }
+    const fullOldPath = this.resolveFile(projectId, oldPath);
+    const fullNewPath = this.resolveFile(projectId, newPath);
+    if (fullOldPath === fullNewPath) return;
+    if (fs.existsSync(fullNewPath)) throw new FileValidationError('A file already exists at the destination');
+    fs.mkdirSync(path.dirname(fullNewPath), { recursive: true });
+    fs.renameSync(fullOldPath, fullNewPath);
   }
 
-  /**
-   * Delete entire project directory
-   */
   static deleteProject(projectId: string): void {
-    const projectPath = this.getProjectPath(projectId);
-    if (fs.existsSync(projectPath)) {
-      fs.rmSync(projectPath, { recursive: true, force: true });
-    }
+    fs.rmSync(this.getProjectPath(projectId), { recursive: true, force: true });
   }
 }

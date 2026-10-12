@@ -1,7 +1,9 @@
 import React, { useRef } from 'react';
 import Editor, { OnMount } from '@monaco-editor/react';
+import './monaco';
 
 interface CodeEditorProps {
+  path: string;
   value: string;
   language: string;
   onChange: (value: string) => void;
@@ -9,12 +11,15 @@ interface CodeEditorProps {
 }
 
 export const CodeEditor: React.FC<CodeEditorProps> = ({
+  path,
   value,
   language,
   onChange,
   onSave,
 }) => {
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
+  const onSaveRef = useRef(onSave);
+  onSaveRef.current = onSave;
 
   const handleEditorMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
@@ -47,7 +52,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
 
     // Add Ctrl+S save handler
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
-      onSave?.();
+      onSaveRef.current?.();
     });
 
     // Set editor options
@@ -97,6 +102,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   return (
     <div className="h-full w-full">
       <Editor
+        path={path}
         height="100%"
         language={language}
         value={value}

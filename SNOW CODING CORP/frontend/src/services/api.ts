@@ -6,6 +6,13 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
+export function getErrorMessage(error: unknown): string {
+  if (axios.isAxiosError<ApiResponse<unknown>>(error) && error.response?.data.error) {
+    return error.response.data.error;
+  }
+  return error instanceof Error ? error.message : 'Unknown error';
+}
+
 // --- Languages ---
 
 export async function getLanguages(): Promise<Language[]> {
@@ -80,13 +87,14 @@ export async function deleteFile(projectId: string, fileId: string): Promise<voi
 // --- Execution ---
 
 export async function executeCode(params: {
+  executionId?: string;
   projectId?: string;
   language: string;
   files: Array<{ name: string; content: string }>;
   stdin?: string;
-}): Promise<ExecutionResult> {
+}, signal?: AbortSignal): Promise<ExecutionResult> {
   try {
-    const { data } = await api.post<ApiResponse<ExecutionResult>>('/execute', params);
+    const { data } = await api.post<ApiResponse<ExecutionResult>>('/execute', params, { signal });
     return data.data!;
   } catch (error) {
     if (axios.isAxiosError<ApiResponse<ExecutionResult>>(error) && error.response?.data.error) {
