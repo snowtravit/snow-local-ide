@@ -45,4 +45,7 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
+// The release bundle includes the built editor; serve it beside the API.
+app.use(express.static(path.join(__dirname, '../../frontend/dist')));
+
 export default app;

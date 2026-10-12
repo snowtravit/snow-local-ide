@@ -9,7 +9,7 @@ export function getExecutionMode(): ExecutionMode {
 }
 
 export function getAllowedOrigins(): string[] {
-  return (process.env.CORS_ORIGINS || 'http://localhost:3000,http://127.0.0.1:3000')
+  return (process.env.CORS_ORIGINS || 'http://localhost:3000,http://127.0.0.1:3000,http://localhost:4000,http://127.0.0.1:4000')
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean);
